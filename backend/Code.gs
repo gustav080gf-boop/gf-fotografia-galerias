@@ -6,9 +6,12 @@ const GF = {
   PREVIEW_SIZE: 1000
 };
 
+let GF_JSONP_CALLBACK = '';
+
 function doGet(e) {
   try {
     const p = (e && e.parameter) || {};
+    GF_JSONP_CALLBACK = safeCallback_(p.callback);
     const action = String(p.action || 'gallery').toLowerCase();
 
     if (action === 'gallery') return json_(getGalleryPublic_(p.g));
@@ -24,11 +27,9 @@ function doGet(e) {
   }
 }
 
-// Se mantiene doPost por compatibilidad con versiones anteriores,
-// pero el frontend actual usa GET para evitar problemas de redirección/CORS
-// de Apps Script desde GitHub Pages.
 function doPost(e) {
   try {
+    GF_JSONP_CALLBACK = '';
     const body = JSON.parse((e.postData && e.postData.contents) || '{}');
     const action = String(body.action || '').toLowerCase();
     if (action === 'auth') return json_(authenticate_(body.g, body.pin));
@@ -247,7 +248,17 @@ function verifyToken_(token) {
   return payload;
 }
 
+function safeCallback_(value) {
+  const cb = String(value || '').trim();
+  return /^[A-Za-z_$][0-9A-Za-z_$\.]*$/.test(cb) ? cb : '';
+}
+
 function json_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
+  const text = JSON.stringify(obj);
+  if (GF_JSONP_CALLBACK) {
+    return ContentService.createTextOutput(GF_JSONP_CALLBACK + '(' + text + ');')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return ContentService.createTextOutput(text)
     .setMimeType(ContentService.MimeType.JSON);
 }
