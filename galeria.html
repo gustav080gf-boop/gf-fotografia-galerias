@@ -13,7 +13,7 @@
       <div class="brand-mark">GF</div>
       <p class="eyebrow">Galería privada</p>
       <h1 id="lockTitle">Acceso</h1>
-      <p>Ingresá la clave de 4 dígitos para continuar.</p>
+      <p id="lockMessage">Ingresá la clave de 4 dígitos para continuar.</p>
       <input id="pinInput" class="pin" inputmode="numeric" maxlength="4" autocomplete="one-time-code" aria-label="Clave de acceso">
       <button id="accessBtn" class="btn primary">Ingresar</button>
       <p id="accessError" class="error"></p>
@@ -28,7 +28,7 @@
         <p id="gallerySubtitle"></p>
       </div>
       <div class="toolbar">
-        <button id="downloadAllBtn" class="btn">Descargar todas</button>
+        <button id="downloadAllBtn" class="btn" hidden>Descargar todas</button>
         <button id="sendPrintBtn" class="btn primary">Enviar a imprimir <span id="selectedCountTop">0</span></button>
       </div>
     </header>
@@ -46,7 +46,7 @@
     <img id="lightboxImg" alt="Vista ampliada">
   </div>
 
-  <script src="./config/galerias.js"></script>
+  <script src="./config/api.js"></script>
   <script src="./assets/galeria.js"></script>
 </body>
 </html>
