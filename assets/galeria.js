@@ -28,7 +28,14 @@
   let token = sessionStorage.getItem(`gf-token:${slug}`) || '';
   let photos = [];
   const selected = new Set();
+
+  const PREVIEW_CONCURRENCY = 3;
+  const MAX_PREVIEW_ATTEMPTS = 3;
+  const previewQueue = [];
+  const queuedPreviews = new Set();
   const loadingPreviews = new Set();
+  const previewAttempts = new Map();
+  let previewActive = 0;
 
   init();
 
@@ -129,17 +136,19 @@
   }
 
   async function loadRemainingPages(totalPages) {
+    let added = false;
     for (let page = 2; page <= totalPages; page++) {
       try {
         const next = await apiGet('photos', { token, page }, 20000);
         if (!next.ok) break;
         photos.push(...(next.photos || []));
-        renderPhotos();
+        added = true;
       } catch (err) {
         console.warn(`No se pudo cargar la página ${page}`, err);
         break;
       }
     }
+    if (added) renderPhotos();
   }
 
   function renderPhotos() {
@@ -169,7 +178,7 @@
         img.src = photo.preview;
       } else {
         img.removeAttribute('src');
-        loadPreview(photo, img);
+        queuePreview(photo);
       }
 
       if (canDownload) {
@@ -234,24 +243,83 @@
 
       grid.appendChild(card);
     });
+
+    pumpPreviewQueue();
   }
 
-  async function loadPreview(photo, img) {
-    if (photo.preview || loadingPreviews.has(photo.id)) return;
-    loadingPreviews.add(photo.id);
+  function currentImageFor(photoId) {
+    const card = Array.from(grid.querySelectorAll('.photo-card')).find(node => node.dataset.id === photoId);
+    return card ? card.querySelector('img') : null;
+  }
+
+  function queuePreview(photo, force = false) {
+    if (photo.preview) {
+      const live = currentImageFor(photo.id);
+      if (live) live.src = photo.preview;
+      return;
+    }
+    if (!force && (queuedPreviews.has(photo.id) || loadingPreviews.has(photo.id))) return;
+    if (force) queuedPreviews.delete(photo.id);
+    queuedPreviews.add(photo.id);
+    previewQueue.push(photo);
+    pumpPreviewQueue();
+  }
+
+  function pumpPreviewQueue() {
+    while (previewActive < PREVIEW_CONCURRENCY && previewQueue.length) {
+      const photo = previewQueue.shift();
+      queuedPreviews.delete(photo.id);
+      if (photo.preview || loadingPreviews.has(photo.id)) continue;
+
+      previewActive += 1;
+      loadingPreviews.add(photo.id);
+      fetchPreview(photo)
+        .catch(err => console.warn(`Preview falló: ${photo.filename}`, err))
+        .finally(() => {
+          loadingPreviews.delete(photo.id);
+          previewActive -= 1;
+          pumpPreviewQueue();
+        });
+    }
+  }
+
+  async function fetchPreview(photo) {
+    const attempt = (previewAttempts.get(photo.id) || 0) + 1;
+    previewAttempts.set(photo.id, attempt);
+
     try {
-      const data = await apiGet('preview', { token, file: photo.id }, 25000);
+      const data = await apiGet('preview', { token, file: photo.id }, 35000);
       if (!data.ok || !data.preview) throw new Error(data.error || 'No se pudo cargar la vista previa.');
+
       photo.preview = data.preview;
-      if (img && img.isConnected) img.src = photo.preview;
-    } catch (err) {
-      console.warn(`Preview falló: ${photo.filename}`, err);
-      if (img && img.isConnected) {
-        img.alt = `${photo.filename} · vista previa no disponible`;
-        img.style.minHeight = '160px';
+      previewAttempts.delete(photo.id);
+      const live = currentImageFor(photo.id);
+      if (live) {
+        live.src = photo.preview;
+        live.style.minHeight = '';
       }
-    } finally {
-      loadingPreviews.delete(photo.id);
+    } catch (err) {
+      if (attempt < MAX_PREVIEW_ATTEMPTS) {
+        const delay = 1200 * attempt;
+        setTimeout(() => queuePreview(photo, true), delay);
+        return;
+      }
+
+      const live = currentImageFor(photo.id);
+      if (live) {
+        live.alt = `${photo.filename} · vista previa no disponible`;
+        live.style.minHeight = '160px';
+        live.style.cursor = 'pointer';
+        live.title = 'Hacé clic para reintentar la vista previa';
+        live.addEventListener('click', function retryPreview(e) {
+          e.stopPropagation();
+          live.removeEventListener('click', retryPreview);
+          live.title = '';
+          previewAttempts.delete(photo.id);
+          queuePreview(photo, true);
+        }, { once: true });
+      }
+      throw err;
     }
   }
 
