@@ -1,7 +1,7 @@
 (() => {
   const qs = new URLSearchParams(location.search);
-  const slug = (qs.get('g') || '').trim();
-  const gallery = window.GF_GALLERIES?.[slug];
+  const slug = (qs.get('g') || '').trim().toLowerCase();
+  const API = String(window.GF_API_URL || '').trim();
 
   const el = (id) => document.getElementById(id);
   const lockScreen = el('lockScreen');
@@ -10,6 +10,7 @@
   const accessBtn = el('accessBtn');
   const accessError = el('accessError');
   const lockTitle = el('lockTitle');
+  const lockMessage = el('lockMessage');
   const galleryTitle = el('galleryTitle');
   const gallerySubtitle = el('gallerySubtitle');
   const grid = el('photoGrid');
@@ -23,101 +24,126 @@
   const lightboxImg = el('lightboxImg');
   const lightboxClose = el('lightboxClose');
 
+  let gallery = null;
+  let token = sessionStorage.getItem(`gf-token:${slug}`) || '';
+  let photos = [];
   const selected = new Set();
-  const canDownload = gallery?.allowDownload === true;
 
-  if (!gallery) {
-    lockTitle.textContent = 'Galería no disponible';
-    pinInput.hidden = true;
-    accessBtn.hidden = true;
-    accessError.textContent = slug ? 'El enlace de esta galería no está activo.' : 'Falta identificar la galería.';
-    return;
+  init();
+
+  async function init() {
+    if (!API || API.includes('REEMPLAZAR_')) return fatal('La API todavía no está configurada.');
+    if (!slug) return fatal('Falta identificar la galería.');
+
+    try {
+      const data = await apiGet('gallery', { g: slug });
+      if (!data.ok) return fatal(data.error || 'Galería no disponible.');
+      gallery = data.gallery;
+      lockTitle.textContent = gallery.title || 'Acceso';
+      if (token) {
+        try {
+          await openGallery();
+          return;
+        } catch (_) {
+          sessionStorage.removeItem(`gf-token:${slug}`);
+          token = '';
+        }
+      }
+    } catch (err) {
+      return fatal('No se pudo conectar con la galería.');
+    }
+
+    pinInput.addEventListener('input', () => {
+      pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
+    });
+    pinInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') verifyAccess();
+    });
+    accessBtn.addEventListener('click', verifyAccess);
   }
 
-  lockTitle.textContent = gallery.title || 'Acceso';
-  pinInput.addEventListener('input', () => {
-    pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
-  });
-  pinInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') verifyAccess();
-  });
-  accessBtn.addEventListener('click', verifyAccess);
-
-  async function sha256(value) {
-    const bytes = new TextEncoder().encode(value);
-    const hash = await crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  function fatal(message) {
+    lockTitle.textContent = 'Galería no disponible';
+    lockMessage.textContent = message;
+    pinInput.hidden = true;
+    accessBtn.hidden = true;
   }
 
   async function verifyAccess() {
     const pin = pinInput.value.trim();
-    if (pin.length !== 4) {
+    if (!/^\d{4}$/.test(pin)) {
       accessError.textContent = 'Ingresá los 4 dígitos.';
       return;
     }
+
     accessBtn.disabled = true;
+    accessError.textContent = '';
     try {
-      const digest = await sha256(pin);
-      if (digest !== gallery.pinHash) {
-        accessError.textContent = 'Clave incorrecta.';
+      const data = await apiPost({ action: 'auth', g: slug, pin });
+      if (!data.ok || !data.token) {
+        accessError.textContent = data.error || 'Clave incorrecta.';
         pinInput.select();
         return;
       }
-      sessionStorage.setItem(`gf-access:${slug}`, digest);
-      openGallery();
+      token = data.token;
+      sessionStorage.setItem(`gf-token:${slug}`, token);
+      await openGallery();
+    } catch (err) {
+      accessError.textContent = 'No se pudo validar el acceso.';
     } finally {
       accessBtn.disabled = false;
     }
   }
 
-  async function restoreSession() {
-    const saved = sessionStorage.getItem(`gf-access:${slug}`);
-    if (saved && saved === gallery.pinHash) openGallery();
-  }
+  async function openGallery() {
+    const first = await apiGet('photos', { token, page: 1 });
+    if (!first.ok) throw new Error(first.error || 'Sesión inválida.');
 
-  function openGallery() {
+    photos = [...(first.photos || [])];
+    for (let page = 2; page <= Number(first.pages || 1); page++) {
+      const next = await apiGet('photos', { token, page });
+      if (!next.ok) throw new Error(next.error || 'No se pudieron cargar las fotos.');
+      photos.push(...(next.photos || []));
+    }
+
     lockScreen.hidden = true;
     galleryApp.hidden = false;
     galleryTitle.textContent = gallery.title || 'Galería';
-    gallerySubtitle.textContent = gallery.subtitle || '';
+    gallerySubtitle.textContent = gallery.welcome || '';
 
-    // REGLA CENTRAL: la descarga controla descarga, WhatsApp y zoom.
-    // La selección para impresión NO depende de allowDownload.
-    downloadAllBtn.hidden = !canDownload;
-    protectionNotice.hidden = canDownload;
+    downloadAllBtn.hidden = !gallery.allowCompleteDownload;
+    protectionNotice.hidden = !!gallery.allowIndividualDownload;
 
     renderPhotos();
     updateSelectionUI();
+    apiPost({ action: 'access', token }).catch(() => {});
   }
 
   function renderPhotos() {
     grid.innerHTML = '';
-    const photos = Array.isArray(gallery.photos) ? gallery.photos : [];
     if (!photos.length) {
       grid.innerHTML = '<div class="notice">Esta galería todavía no tiene imágenes cargadas.</div>';
       return;
     }
 
     photos.forEach((photo, index) => {
+      const canDownload = gallery.allowIndividualDownload && photo.canDownload;
       const card = document.createElement('article');
       card.className = `photo-card${canDownload ? '' : ' watermark'}`;
       card.dataset.id = photo.id;
 
       const img = document.createElement('img');
       img.src = photo.preview;
-      img.alt = `${gallery.title || 'Galería'} · foto ${index + 1}`;
+      img.alt = `${gallery.title || 'Galería'} · foto ${photo.code || index + 1}`;
       img.loading = 'lazy';
       img.decoding = 'async';
       img.draggable = false;
       img.addEventListener('contextmenu', e => e.preventDefault());
       img.addEventListener('dragstart', e => e.preventDefault());
 
-      // Solo permitimos ampliación cuando la descarga está habilitada.
       if (canDownload) {
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', () => openLightbox(photo));
-      } else {
-        img.style.cursor = 'default';
       }
 
       const actions = document.createElement('div');
@@ -131,26 +157,26 @@
       selectBtn.title = 'Seleccionar para imprimir';
       selectBtn.setAttribute('aria-label', 'Seleccionar para imprimir');
       selectBtn.textContent = '✓';
-      selectBtn.addEventListener('click', (e) => {
+      selectBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        toggleSelection(photo.id, selectBtn);
+        const isSelected = toggleSelection(photo.id, selectBtn);
+        apiPost({ action: 'favorite', token, photoId: photo.id, selected: isSelected }).catch(() => {});
       });
       left.appendChild(selectBtn);
 
       const right = document.createElement('div');
       right.className = 'right';
 
-      // Descargar y WhatsApp SOLO existen si allowDownload=true.
       if (canDownload) {
         const waBtn = document.createElement('button');
         waBtn.className = 'icon-btn';
         waBtn.type = 'button';
-        waBtn.title = 'Compartir por WhatsApp';
-        waBtn.setAttribute('aria-label', 'Compartir por WhatsApp');
+        waBtn.title = 'Compartir';
+        waBtn.setAttribute('aria-label', 'Compartir');
         waBtn.textContent = 'WA';
         waBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          shareWhatsApp(photo);
+          sharePhoto(photo);
         });
 
         const dlBtn = document.createElement('button');
@@ -185,12 +211,14 @@
       selected.delete(id);
       button.classList.remove('selected');
       button.setAttribute('aria-pressed', 'false');
-    } else {
-      selected.add(id);
-      button.classList.add('selected');
-      button.setAttribute('aria-pressed', 'true');
+      updateSelectionUI();
+      return false;
     }
+    selected.add(id);
+    button.classList.add('selected');
+    button.setAttribute('aria-pressed', 'true');
     updateSelectionUI();
+    return true;
   }
 
   function updateSelectionUI() {
@@ -202,61 +230,93 @@
   }
 
   clearSelectionBtn.addEventListener('click', () => {
+    const ids = [...selected];
     selected.clear();
-    grid.querySelectorAll('.icon-btn.selected').forEach(b => b.classList.remove('selected'));
+    grid.querySelectorAll('.icon-btn.selected').forEach(b => {
+      b.classList.remove('selected');
+      b.setAttribute('aria-pressed', 'false');
+    });
     updateSelectionUI();
+    ids.forEach(id => apiPost({ action: 'favorite', token, photoId: id, selected: false }).catch(() => {}));
   });
 
   sendPrintBtn.addEventListener('click', () => {
     if (!selected.size) return;
-    const ids = [...selected];
+    const chosen = photos.filter(p => selected.has(p.id));
+    const codes = chosen.map(p => p.code || p.filename).join(', ');
     const lines = [
       `Hola Gustavo, quiero solicitar impresiones de la galería “${gallery.title || slug}”.`,
-      `Fotos seleccionadas (${ids.length}): ${ids.join(', ')}`,
+      `Fotos seleccionadas (${chosen.length}): ${codes}`,
       'Quedo a la espera para coordinar tamaño, cantidad y valor.'
     ];
-    const number = (gallery.whatsappNumber || '').replace(/\D/g, '');
-    const url = number
-      ? `https://wa.me/${number}?text=${encodeURIComponent(lines.join('\n'))}`
-      : `https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(`https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`, '_blank', 'noopener,noreferrer');
   });
 
-  function shareWhatsApp(photo) {
-    if (!canDownload) return;
-    const text = `Foto ${photo.id} · ${gallery.title || 'GF Fotografía'}\n${photo.original || photo.preview}`;
-    const number = (gallery.whatsappNumber || '').replace(/\D/g, '');
-    const url = number
-      ? `https://wa.me/${number}?text=${encodeURIComponent(text)}`
-      : `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+  async function getOriginal(photo) {
+    const data = await apiGet('download', { token, file: photo.id });
+    if (!data.ok || !data.data) throw new Error(data.error || 'No se pudo obtener la fotografía.');
+    const bytes = Uint8Array.from(atob(data.data), c => c.charCodeAt(0));
+    return new File([bytes], data.filename || photo.filename || 'foto.jpg', { type: data.mime || 'image/jpeg' });
   }
 
-  function downloadPhoto(photo) {
-    if (!canDownload || !photo.original) return;
-    const a = document.createElement('a');
-    a.href = photo.original;
-    a.download = photo.filename || `${photo.id}.jpg`;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  async function downloadPhoto(photo) {
+    if (!gallery.allowIndividualDownload) return;
+    try {
+      const file = await getOriginal(photo);
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (err) {
+      alert(err.message || 'No se pudo descargar la fotografía.');
+    }
   }
 
-  downloadAllBtn.addEventListener('click', () => {
-    if (!canDownload) return;
-    const photos = (gallery.photos || []).filter(p => p.original);
-    photos.forEach((p, i) => setTimeout(() => downloadPhoto(p), i * 250));
+  downloadAllBtn.addEventListener('click', async () => {
+    if (!gallery.allowCompleteDownload) return;
+    for (const photo of photos) {
+      await downloadPhoto(photo);
+      await new Promise(r => setTimeout(r, 250));
+    }
   });
 
-  function openLightbox(photo) {
-    if (!canDownload) return;
-    lightboxImg.src = photo.original || photo.preview;
-    lightbox.classList.add('open');
-    lightbox.setAttribute('aria-hidden', 'false');
+  async function sharePhoto(photo) {
+    if (!gallery.allowIndividualDownload) return;
+    try {
+      const file = await getOriginal(photo);
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: gallery.title || 'GF Fotografía' });
+        return;
+      }
+      await downloadPhoto(photo);
+      alert('La imagen fue descargada. Podés adjuntarla en WhatsApp.');
+    } catch (err) {
+      if (err && err.name !== 'AbortError') alert('No se pudo compartir la fotografía.');
+    }
+  }
+
+  async function openLightbox(photo) {
+    if (!gallery.allowIndividualDownload) return;
+    try {
+      const file = await getOriginal(photo);
+      const url = URL.createObjectURL(file);
+      lightboxImg.src = url;
+      lightboxImg.dataset.objectUrl = url;
+      lightbox.classList.add('open');
+      lightbox.setAttribute('aria-hidden', 'false');
+    } catch (err) {
+      alert('No se pudo ampliar la fotografía.');
+    }
   }
 
   function closeLightbox() {
+    const old = lightboxImg.dataset.objectUrl;
+    if (old) URL.revokeObjectURL(old);
+    delete lightboxImg.dataset.objectUrl;
     lightbox.classList.remove('open');
     lightbox.setAttribute('aria-hidden', 'true');
     lightboxImg.removeAttribute('src');
@@ -270,10 +330,25 @@
     if (e.key === 'Escape') closeLightbox();
   });
 
-  // Barreras básicas adicionales. No existe un bloqueo web 100% efectivo contra capturas.
   document.addEventListener('contextmenu', (e) => {
-    if (!canDownload && galleryApp.contains(e.target)) e.preventDefault();
+    if (gallery && !gallery.allowIndividualDownload && galleryApp.contains(e.target)) e.preventDefault();
   });
 
-  restoreSession();
+  async function apiGet(action, params = {}) {
+    const url = new URL(API);
+    url.searchParams.set('action', action);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+    const res = await fetch(url.toString(), { method: 'GET', redirect: 'follow', cache: 'no-store' });
+    return res.json();
+  }
+
+  async function apiPost(body) {
+    const res = await fetch(API, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    });
+    return res.json();
+  }
 })();
