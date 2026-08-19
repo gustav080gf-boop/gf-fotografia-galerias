@@ -2,8 +2,8 @@
   const qs = new URLSearchParams(location.search);
   const slug = (qs.get('g') || '').trim().toLowerCase();
   const API = String(window.GF_API_URL || '').trim();
+  const el = id => document.getElementById(id);
 
-  const el = (id) => document.getElementById(id);
   const lockScreen = el('lockScreen');
   const galleryApp = el('galleryApp');
   const pinInput = el('pinInput');
@@ -36,10 +36,11 @@
     if (!slug) return fatal('Falta identificar la galería.');
 
     try {
-      const data = await apiGet('gallery', { g: slug });
+      const data = await apiGet('gallery', { g: slug }, 15000);
       if (!data.ok) return fatal(data.error || 'Galería no disponible.');
       gallery = data.gallery;
       lockTitle.textContent = gallery.title || 'Acceso';
+
       if (token) {
         try {
           await openGallery();
@@ -50,13 +51,13 @@
         }
       }
     } catch (err) {
-      return fatal('No se pudo conectar con la galería.');
+      return fatal(`No se pudo conectar con la galería. ${friendlyError(err)}`);
     }
 
     pinInput.addEventListener('input', () => {
       pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 4);
     });
-    pinInput.addEventListener('keydown', (e) => {
+    pinInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') verifyAccess();
     });
     accessBtn.addEventListener('click', verifyAccess);
@@ -79,19 +80,22 @@
     accessBtn.disabled = true;
     accessBtn.textContent = 'Validando…';
     accessError.textContent = '';
+
     try {
-      const data = await apiGet('auth', { g: slug, pin });
+      const data = await apiGet('auth', { g: slug, pin }, 25000);
       if (!data.ok || !data.token) {
         accessError.textContent = data.error || 'Clave incorrecta.';
         pinInput.select();
         return;
       }
+
       token = data.token;
       sessionStorage.setItem(`gf-token:${slug}`, token);
+      accessBtn.textContent = 'Cargando fotos…';
       await openGallery();
     } catch (err) {
-      console.error('GF auth error', err);
-      accessError.textContent = 'No se pudo validar el acceso. Recargá la página e intentá nuevamente.';
+      console.error('GF auth/load error', err);
+      accessError.textContent = `No se pudo completar el acceso. ${friendlyError(err)}`;
     } finally {
       accessBtn.disabled = false;
       accessBtn.textContent = 'Ingresar';
@@ -99,27 +103,40 @@
   }
 
   async function openGallery() {
-    const first = await apiGet('photos', { token, page: 1 });
+    const first = await apiGet('photos', { token, page: 1 }, 30000);
     if (!first.ok) throw new Error(first.error || 'Sesión inválida.');
 
     photos = [...(first.photos || [])];
-    for (let page = 2; page <= Number(first.pages || 1); page++) {
-      const next = await apiGet('photos', { token, page });
-      if (!next.ok) throw new Error(next.error || 'No se pudieron cargar las fotos.');
-      photos.push(...(next.photos || []));
-    }
+    showGallery();
+    renderPhotos();
+    updateSelectionUI();
+    apiGet('access', { token }, 10000).catch(() => {});
 
+    const totalPages = Number(first.pages || 1);
+    if (totalPages > 1) loadRemainingPages(totalPages);
+  }
+
+  function showGallery() {
     lockScreen.hidden = true;
     galleryApp.hidden = false;
     galleryTitle.textContent = gallery.title || 'Galería';
     gallerySubtitle.textContent = gallery.welcome || '';
-
     downloadAllBtn.hidden = !gallery.allowCompleteDownload;
     protectionNotice.hidden = !!gallery.allowIndividualDownload;
+  }
 
-    renderPhotos();
-    updateSelectionUI();
-    apiGet('access', { token }).catch(() => {});
+  async function loadRemainingPages(totalPages) {
+    for (let page = 2; page <= totalPages; page++) {
+      try {
+        const next = await apiGet('photos', { token, page }, 30000);
+        if (!next.ok) break;
+        photos.push(...(next.photos || []));
+        renderPhotos();
+      } catch (err) {
+        console.warn(`No se pudo cargar la página ${page}`, err);
+        break;
+      }
+    }
   }
 
   function renderPhotos() {
@@ -130,7 +147,7 @@
     }
 
     photos.forEach((photo, index) => {
-      const canDownload = gallery.allowIndividualDownload && photo.canDownload;
+      const canDownload = !!(gallery.allowIndividualDownload && photo.canDownload);
       const card = document.createElement('article');
       card.className = `photo-card${canDownload ? '' : ' watermark'}`;
       card.dataset.id = photo.id;
@@ -143,7 +160,6 @@
       img.draggable = false;
       img.addEventListener('contextmenu', e => e.preventDefault());
       img.addEventListener('dragstart', e => e.preventDefault());
-
       if (canDownload) {
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', () => openLightbox(photo));
@@ -151,33 +167,33 @@
 
       const actions = document.createElement('div');
       actions.className = 'photo-actions';
-
       const left = document.createElement('div');
       left.className = 'left';
+      const right = document.createElement('div');
+      right.className = 'right';
+
       const selectBtn = document.createElement('button');
       selectBtn.className = 'icon-btn';
       selectBtn.type = 'button';
       selectBtn.title = 'Seleccionar para imprimir';
       selectBtn.setAttribute('aria-label', 'Seleccionar para imprimir');
+      selectBtn.setAttribute('aria-pressed', selected.has(photo.id) ? 'true' : 'false');
       selectBtn.textContent = '✓';
-      selectBtn.addEventListener('click', (e) => {
+      if (selected.has(photo.id)) selectBtn.classList.add('selected');
+      selectBtn.addEventListener('click', e => {
         e.stopPropagation();
         const isSelected = toggleSelection(photo.id, selectBtn);
-        apiGet('favorite', { token, photoId: photo.id, selected: isSelected ? 'SI' : 'NO' }).catch(() => {});
+        apiGet('favorite', { token, photoId: photo.id, selected: isSelected ? 'SI' : 'NO' }, 10000).catch(() => {});
       });
       left.appendChild(selectBtn);
-
-      const right = document.createElement('div');
-      right.className = 'right';
 
       if (canDownload) {
         const waBtn = document.createElement('button');
         waBtn.className = 'icon-btn';
         waBtn.type = 'button';
         waBtn.title = 'Compartir';
-        waBtn.setAttribute('aria-label', 'Compartir');
         waBtn.textContent = 'WA';
-        waBtn.addEventListener('click', (e) => {
+        waBtn.addEventListener('click', e => {
           e.stopPropagation();
           sharePhoto(photo);
         });
@@ -186,9 +202,8 @@
         dlBtn.className = 'icon-btn';
         dlBtn.type = 'button';
         dlBtn.title = 'Descargar fotografía';
-        dlBtn.setAttribute('aria-label', 'Descargar fotografía');
         dlBtn.textContent = '↓';
-        dlBtn.addEventListener('click', (e) => {
+        dlBtn.addEventListener('click', e => {
           e.stopPropagation();
           downloadPhoto(photo);
         });
@@ -235,12 +250,9 @@
   clearSelectionBtn.addEventListener('click', () => {
     const ids = [...selected];
     selected.clear();
-    grid.querySelectorAll('.icon-btn.selected').forEach(b => {
-      b.classList.remove('selected');
-      b.setAttribute('aria-pressed', 'false');
-    });
+    renderPhotos();
     updateSelectionUI();
-    ids.forEach(id => apiGet('favorite', { token, photoId: id, selected: 'NO' }).catch(() => {}));
+    ids.forEach(id => apiGet('favorite', { token, photoId: id, selected: 'NO' }, 10000).catch(() => {}));
   });
 
   sendPrintBtn.addEventListener('click', () => {
@@ -256,7 +268,7 @@
   });
 
   async function getOriginal(photo) {
-    const data = await apiGet('download', { token, file: photo.id });
+    const data = await apiGet('download', { token, file: photo.id }, 30000);
     if (!data.ok || !data.data) throw new Error(data.error || 'No se pudo obtener la fotografía.');
     const bytes = Uint8Array.from(atob(data.data), c => c.charCodeAt(0));
     return new File([bytes], data.filename || photo.filename || 'foto.jpg', { type: data.mime || 'image/jpeg' });
@@ -311,7 +323,7 @@
       lightboxImg.dataset.objectUrl = url;
       lightbox.classList.add('open');
       lightbox.setAttribute('aria-hidden', 'false');
-    } catch (err) {
+    } catch (_) {
       alert('No se pudo ampliar la fotografía.');
     }
   }
@@ -326,24 +338,41 @@
   }
 
   lightboxClose.addEventListener('click', closeLightbox);
-  lightbox.addEventListener('click', (e) => {
+  lightbox.addEventListener('click', e => {
     if (e.target === lightbox) closeLightbox();
   });
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeLightbox();
   });
-
-  document.addEventListener('contextmenu', (e) => {
+  document.addEventListener('contextmenu', e => {
     if (gallery && !gallery.allowIndividualDownload && galleryApp.contains(e.target)) e.preventDefault();
   });
 
-  async function apiGet(action, params = {}) {
+  async function apiGet(action, params = {}, timeoutMs = 25000) {
     const url = new URL(API);
     url.searchParams.set('action', action);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
     url.searchParams.set('_', Date.now().toString());
-    const res = await fetch(url.toString(), { method: 'GET', redirect: 'follow', cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url.toString(), {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function friendlyError(err) {
+    if (!err) return '';
+    if (err.name === 'AbortError') return 'La API tardó demasiado en responder.';
+    return err.message ? `(${err.message})` : '';
   }
 })();
