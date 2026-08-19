@@ -8,16 +8,25 @@ const GF = {
 
 function doGet(e) {
   try {
-    const action = String((e.parameter && e.parameter.action) || 'gallery').toLowerCase();
-    if (action === 'gallery') return json_(getGalleryPublic_(e.parameter.g));
-    if (action === 'photos') return json_(getPhotos_(e.parameter.token, Number(e.parameter.page || 1)));
-    if (action === 'download') return json_(getDownload_(e.parameter.token, e.parameter.file));
+    const p = (e && e.parameter) || {};
+    const action = String(p.action || 'gallery').toLowerCase();
+
+    if (action === 'gallery') return json_(getGalleryPublic_(p.g));
+    if (action === 'auth') return json_(authenticate_(p.g, p.pin));
+    if (action === 'photos') return json_(getPhotos_(p.token, Number(p.page || 1)));
+    if (action === 'download') return json_(getDownload_(p.token, p.file));
+    if (action === 'favorite') return json_(saveFavorite_(p.token, p.photoId, yes_(p.selected)));
+    if (action === 'access') return json_(registerAccess_(p.token));
+
     return json_({ ok: false, error: 'Acción no válida.' });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
   }
 }
 
+// Se mantiene doPost por compatibilidad con versiones anteriores,
+// pero el frontend actual usa GET para evitar problemas de redirección/CORS
+// de Apps Script desde GitHub Pages.
 function doPost(e) {
   try {
     const body = JSON.parse((e.postData && e.postData.contents) || '{}');
@@ -154,7 +163,7 @@ function getPreviewDataUrl_(fileId, width) {
     const blob = DriveApp.getFileById(fileId).getBlob();
     return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
   }
-  let url = meta.thumbnailLink.replace(/=s\d+$/, '=s' + width);
+  const url = meta.thumbnailLink.replace(/=s\d+$/, '=s' + width);
   const imgResp = UrlFetchApp.fetch(url, { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
   if (imgResp.getResponseCode() >= 300) throw new Error('No se pudo cargar la vista previa.');
   const blob = imgResp.getBlob();
