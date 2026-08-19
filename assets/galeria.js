@@ -64,7 +64,7 @@
 
   function fatal(message) {
     lockTitle.textContent = 'Galería no disponible';
-    lockMessage.textContent = message;
+    if (lockMessage) lockMessage.textContent = message;
     pinInput.hidden = true;
     accessBtn.hidden = true;
   }
@@ -77,9 +77,10 @@
     }
 
     accessBtn.disabled = true;
+    accessBtn.textContent = 'Validando…';
     accessError.textContent = '';
     try {
-      const data = await apiPost({ action: 'auth', g: slug, pin });
+      const data = await apiGet('auth', { g: slug, pin });
       if (!data.ok || !data.token) {
         accessError.textContent = data.error || 'Clave incorrecta.';
         pinInput.select();
@@ -89,9 +90,11 @@
       sessionStorage.setItem(`gf-token:${slug}`, token);
       await openGallery();
     } catch (err) {
-      accessError.textContent = 'No se pudo validar el acceso.';
+      console.error('GF auth error', err);
+      accessError.textContent = 'No se pudo validar el acceso. Recargá la página e intentá nuevamente.';
     } finally {
       accessBtn.disabled = false;
+      accessBtn.textContent = 'Ingresar';
     }
   }
 
@@ -116,7 +119,7 @@
 
     renderPhotos();
     updateSelectionUI();
-    apiPost({ action: 'access', token }).catch(() => {});
+    apiGet('access', { token }).catch(() => {});
   }
 
   function renderPhotos() {
@@ -157,10 +160,10 @@
       selectBtn.title = 'Seleccionar para imprimir';
       selectBtn.setAttribute('aria-label', 'Seleccionar para imprimir');
       selectBtn.textContent = '✓';
-      selectBtn.addEventListener('click', async (e) => {
+      selectBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const isSelected = toggleSelection(photo.id, selectBtn);
-        apiPost({ action: 'favorite', token, photoId: photo.id, selected: isSelected }).catch(() => {});
+        apiGet('favorite', { token, photoId: photo.id, selected: isSelected ? 'SI' : 'NO' }).catch(() => {});
       });
       left.appendChild(selectBtn);
 
@@ -237,7 +240,7 @@
       b.setAttribute('aria-pressed', 'false');
     });
     updateSelectionUI();
-    ids.forEach(id => apiPost({ action: 'favorite', token, photoId: id, selected: false }).catch(() => {}));
+    ids.forEach(id => apiGet('favorite', { token, photoId: id, selected: 'NO' }).catch(() => {}));
   });
 
   sendPrintBtn.addEventListener('click', () => {
@@ -338,17 +341,9 @@
     const url = new URL(API);
     url.searchParams.set('action', action);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+    url.searchParams.set('_', Date.now().toString());
     const res = await fetch(url.toString(), { method: 'GET', redirect: 'follow', cache: 'no-store' });
-    return res.json();
-  }
-
-  async function apiPost(body) {
-    const res = await fetch(API, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(body)
-    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }
 })();
