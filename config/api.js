@@ -15,7 +15,7 @@ window.GF_API_URL = 'https://script.google.com/macros/s/AKfycbxukufQD_AKCtgw891C
     return new Promise((resolve, reject) => {
       const callbackName = '__gf_jsonp_' + Date.now() + '_' + Math.random().toString(36).slice(2);
       const url = new URL(rawUrl);
-      url.searchParams.set('callback', callbackName);
+      url.searchParams.set('prefix', callbackName);
 
       const script = document.createElement('script');
       script.src = url.toString();
