@@ -28,6 +28,7 @@
   let token = sessionStorage.getItem(`gf-token:${slug}`) || '';
   let photos = [];
   const selected = new Set();
+  const loadingPreviews = new Set();
 
   init();
 
@@ -91,11 +92,13 @@
 
       token = data.token;
       sessionStorage.setItem(`gf-token:${slug}`, token);
-      accessBtn.textContent = 'Cargando fotos…';
+      accessBtn.textContent = 'Cargando galería…';
       await openGallery();
     } catch (err) {
       console.error('GF auth/load error', err);
       accessError.textContent = `No se pudo completar el acceso. ${friendlyError(err)}`;
+      sessionStorage.removeItem(`gf-token:${slug}`);
+      token = '';
     } finally {
       accessBtn.disabled = false;
       accessBtn.textContent = 'Ingresar';
@@ -103,7 +106,7 @@
   }
 
   async function openGallery() {
-    const first = await apiGet('photos', { token, page: 1 }, 30000);
+    const first = await apiGet('photos', { token, page: 1 }, 20000);
     if (!first.ok) throw new Error(first.error || 'Sesión inválida.');
 
     photos = [...(first.photos || [])];
@@ -128,7 +131,7 @@
   async function loadRemainingPages(totalPages) {
     for (let page = 2; page <= totalPages; page++) {
       try {
-        const next = await apiGet('photos', { token, page }, 30000);
+        const next = await apiGet('photos', { token, page }, 20000);
         if (!next.ok) break;
         photos.push(...(next.photos || []));
         renderPhotos();
@@ -153,13 +156,22 @@
       card.dataset.id = photo.id;
 
       const img = document.createElement('img');
-      img.src = photo.preview;
       img.alt = `${gallery.title || 'Galería'} · foto ${photo.code || index + 1}`;
       img.loading = 'lazy';
       img.decoding = 'async';
       img.draggable = false;
+      img.style.minHeight = '220px';
+      img.style.background = '#111';
       img.addEventListener('contextmenu', e => e.preventDefault());
       img.addEventListener('dragstart', e => e.preventDefault());
+
+      if (photo.preview) {
+        img.src = photo.preview;
+      } else {
+        img.removeAttribute('src');
+        loadPreview(photo, img);
+      }
+
       if (canDownload) {
         img.style.cursor = 'zoom-in';
         img.addEventListener('click', () => openLightbox(photo));
@@ -224,6 +236,25 @@
     });
   }
 
+  async function loadPreview(photo, img) {
+    if (photo.preview || loadingPreviews.has(photo.id)) return;
+    loadingPreviews.add(photo.id);
+    try {
+      const data = await apiGet('preview', { token, file: photo.id }, 25000);
+      if (!data.ok || !data.preview) throw new Error(data.error || 'No se pudo cargar la vista previa.');
+      photo.preview = data.preview;
+      if (img && img.isConnected) img.src = photo.preview;
+    } catch (err) {
+      console.warn(`Preview falló: ${photo.filename}`, err);
+      if (img && img.isConnected) {
+        img.alt = `${photo.filename} · vista previa no disponible`;
+        img.style.minHeight = '160px';
+      }
+    } finally {
+      loadingPreviews.delete(photo.id);
+    }
+  }
+
   function toggleSelection(id, button) {
     if (selected.has(id)) {
       selected.delete(id);
@@ -268,7 +299,7 @@
   });
 
   async function getOriginal(photo) {
-    const data = await apiGet('download', { token, file: photo.id }, 30000);
+    const data = await apiGet('download', { token, file: photo.id }, 45000);
     if (!data.ok || !data.data) throw new Error(data.error || 'No se pudo obtener la fotografía.');
     const bytes = Uint8Array.from(atob(data.data), c => c.charCodeAt(0));
     return new File([bytes], data.filename || photo.filename || 'foto.jpg', { type: data.mime || 'image/jpeg' });
