@@ -1,4 +1,4 @@
-window.GF_API_URL = 'https://script.google.com/macros/s/AKfycby439aU7A0nxKXK3vcZfA6rbuEdip7TfQaa2P2TqUy7k64GBSiatenxKGhOqPsir9U_gA/exec';
+window.GF_API_URL = 'https://script.google.com/macros/s/AKfycbxukufQD_AKCtgw891CAGL_nxA75S8e0lvsF7xi1f3BCND9h6TlvuYjO7wSZY-bcu64uA/exec';
 
 (() => {
   const apiBase = String(window.GF_API_URL || '');
